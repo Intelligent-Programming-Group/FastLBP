@@ -1,0 +1,11 @@
+# add_executable(bingo_wrapper_topo bingo_wrapper_topo.cu)
+add_executable(bingo_wrapper bingo_wrapper.cu)
+add_executable(example example.cu)
+add_executable(example_ext example_ext.cu)
+add_executable(example_ext_clamp example_ext_clamp.cu)
+
+# target_link_libraries(bingo_wrapper_topo ext)
+target_link_libraries(bingo_wrapper ext)
+target_link_libraries(example lbp)
+target_link_libraries(example_ext ext)
+target_link_libraries(example_ext_clamp ext)
