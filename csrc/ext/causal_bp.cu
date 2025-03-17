@@ -176,18 +176,22 @@ void CausalBP::construct() {
     }
 
     if (props.updates != Properties::UpdateType::PARALL) {
-        _updateSeq.clear();
-        _updateSeq.reserve(nrEdges());
-        for (size_t I = 0; I < nrFactors(); I++) {
-            for (auto &i: nbF(I)) {
-                _updateSeq.push_back(Edge(i, i.dual));
-            }
+        std::vector<int> numbers(nrFactors());
+        for(int i = 0; i < nrFactors(); ++i) {
+            numbers[i] = i;
         }
         unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
         engine.seed(seed);
+        std::shuffle(numbers.begin(), numbers.end(), engine);
+        _updateSeq.clear();
+        _updateSeq.reserve(nrEdges());
+        for (size_t I = 0; I < nrFactors(); I++) {
+            for (auto &i: nbF(numbers[I])) {
+                _updateSeq.push_back(Edge(i, i.dual));
+            }
+        }
         
         if (props.updates == Properties::UpdateType::SEQFIX) {
-            std::shuffle(_updateSeq.begin(), _updateSeq.end(), engine);
             putUpdateSeqToKernel(
                 h_row_ptr_fv, h_row_ptr_vf, h_head, 
                 h_prob_default, h_prob, h_mask0, h_mask1
@@ -942,9 +946,6 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
 
     enum class RunReturnReason { ALL_CONVERGED, BIG_FRAC_CONVERGED, DIVERGED };
     RunReturnReason returnReason = RunReturnReason::DIVERGED;
-
-    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-    std::default_random_engine engine(seed);
 
     for (; true; numIters++, _iters++) {
         if (numIters >= minIters) {
