@@ -716,7 +716,7 @@ void CausalBP::putUpdateSeqToKernel(
     _updateSeqOrBU.push_back(update_seq_or_bu);
     _updateSeqAndClampedBU.push_back(update_seq_and_clamped_bu);
     _updateSeqOrClampedBU.push_back(update_seq_or_clamped_bu);
-    std::cerr << "len: " <<  _updateSeqVF.size() << std::endl;
+    // std::cerr << "len: " <<  _updateSeqVF.size() << std::endl;
 }
 
 void CausalBP::putParallUpdateSeqToKernel(
