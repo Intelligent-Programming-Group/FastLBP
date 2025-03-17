@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <random>
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 #include <ext/causal_fg.h>
@@ -98,6 +99,9 @@ private:
     std::vector<thrust::device_vector<Index6Real2>> _updateSeqOrBU;
     std::vector<thrust::device_vector<Index6Real4>> _updateSeqAndClampedBU;
     std::vector<thrust::device_vector<Index6Real4>> _updateSeqOrClampedBU;
+
+    /// @brief random engine for `std::shuffle`.
+    std::default_random_engine engine;
 
     /// @brief 
     /// @param i 

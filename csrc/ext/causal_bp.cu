@@ -183,8 +183,11 @@ void CausalBP::construct() {
                 _updateSeq.push_back(Edge(i, i.dual));
             }
         }
+        unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+        engine.seed(seed);
         
         if (props.updates == Properties::UpdateType::SEQFIX) {
+            std::shuffle(_updateSeq.begin(), _updateSeq.end(), engine);
             putUpdateSeqToKernel(
                 h_row_ptr_fv, h_row_ptr_vf, h_head, 
                 h_prob_default, h_prob, h_mask0, h_mask1
@@ -713,7 +716,7 @@ void CausalBP::putUpdateSeqToKernel(
     _updateSeqOrBU.push_back(update_seq_or_bu);
     _updateSeqAndClampedBU.push_back(update_seq_and_clamped_bu);
     _updateSeqOrClampedBU.push_back(update_seq_or_clamped_bu);
-    // std::cerr << "len: " <<  _updateSeqVF.size() << std::endl;
+    std::cerr << "len: " <<  _updateSeqVF.size() << std::endl;
 }
 
 void CausalBP::putParallUpdateSeqToKernel(
@@ -860,8 +863,6 @@ void CausalBP::run() {
     if (props.verbose >= 1) {
         std::cerr << "Starting ..." << std::endl;
     }
-    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-    std::default_random_engine engine(seed);
 
     Real tic = toc();
     Real maxDiff = INFINITY;
@@ -906,12 +907,12 @@ void CausalBP::run() {
             if (props.verbose == 1) {
                 std::cerr << std::endl;
             }
-            std::cerr << "BP::run:  WARNING: not converged after " << _iters;
+            std::cerr << "CausalBP::run:  WARNING: not converged after " << _iters;
             std::cerr << " passes (" << toc() - tic;
             std::cerr << " seconds)...final maxdiff:" << maxDiff << std::endl;
         } else {
             if (props.verbose >= 3) {
-                std::cerr << "BP::run:  ";
+                std::cerr << "CausalBP::run:  ";
             }
             std::cerr << "converged in " << _iters << " passes (";
             std::cerr << toc() - tic << " seconds)." << std::endl;
