@@ -9,8 +9,10 @@
 // system time
 #include <sys/time.h>
 
+#include <chrono>
 #include <map>
 #include <iostream>
+#include <random>
 #include <set>
 #include <vector>
 
@@ -107,5 +109,19 @@ inline Real toc() {
     gettimeofday(&tv, &tz);
     return (Real)(tv.tv_sec + (Real)tv.tv_usec / 1000000.0);
 }
+
+inline std::string nowstr() {
+    auto today = std::chrono::system_clock::now();
+    time_t tt = std::chrono::system_clock::to_time_t(today);
+    std::string ans = ctime(&tt);
+    return ans.substr(0, ans.size() - 1);
+}
+#define __LOGSTR__ (nowstr() + " " + __FILE__ + ": " + (std::to_string)(__LINE__) + ". ")
+
+/// @brief Type of global random number generator
+typedef std::mt19937 rnd_gen_type;
+
+/// @brief Global random number generator
+extern thread_local rnd_gen_type rnd_gen;
 
 }

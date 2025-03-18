@@ -16,6 +16,8 @@
 
 namespace lbp {
 
+thread_local rnd_gen_type rnd_gen(42U);
+
 struct dist_functor {
     __device__ Real operator()(const Real x, const Real y) const {
         return std::fabs(x - y);
@@ -180,9 +182,7 @@ void CausalBP::construct() {
         for(int i = 0; i < nrFactors(); ++i) {
             numbers[i] = i;
         }
-        unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-        engine.seed(seed);
-        std::shuffle(numbers.begin(), numbers.end(), engine);
+        std::shuffle(numbers.begin(), numbers.end(), rnd_gen);
         _updateSeq.clear();
         _updateSeq.reserve(nrEdges());
         for (size_t I = 0; I < nrFactors(); I++) {
@@ -876,7 +876,7 @@ void CausalBP::run() {
             calcNewMessageAll();
         } else {
             if (props.updates == Properties::UpdateType::SEQRND) {
-                std::shuffle(_updateSeq.begin(), _updateSeq.end(), engine);
+                std::shuffle(_updateSeq.begin(), _updateSeq.end(), rnd_gen);
                 putUpdateSeqToKernel(
                     hostProp.h_row_ptr_fv, hostProp.h_row_ptr_vf, hostProp.h_head, 
                     hostProp.h_prob_default, hostProp.h_prob, hostProp.h_mask0, 
@@ -970,7 +970,7 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
             calcNewMessageAll();
         } else {
             if (props.updates == Properties::UpdateType::SEQRND) {
-                std::shuffle(_updateSeq.begin(), _updateSeq.end(), engine);
+                std::shuffle(_updateSeq.begin(), _updateSeq.end(), rnd_gen);
                 putUpdateSeqToKernel(
                     hostProp.h_row_ptr_fv, hostProp.h_row_ptr_vf, hostProp.h_head, 
                     hostProp.h_prob_default, hostProp.h_prob, hostProp.h_mask0, 

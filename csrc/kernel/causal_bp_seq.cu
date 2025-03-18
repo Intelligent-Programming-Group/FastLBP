@@ -3,7 +3,6 @@
 /// 
 /// @date 2025-01-14
 
-#include <cusparse.h>
 #include <thrust/device_vector.h>
 #include <kernel/causal_bp_seq.h>
 #include <utils/cuda_utils.h>
@@ -16,6 +15,12 @@ StreamHelper stream_helper;
 void streamSynchronize() {
     for (int i = 0; i < NSTREAM; i++) {
         cudaStreamSynchronize(stream_helper.stream[i]);
+    }
+}
+
+void streamCreate() {
+    for (int i = 0; i < NSTREAM; i++) {
+        cudaStreamCreate(&stream_helper.stream[i]);
     }
 }
 

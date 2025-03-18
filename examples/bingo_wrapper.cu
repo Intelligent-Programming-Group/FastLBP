@@ -1,10 +1,12 @@
 #include <ext/causal_bp.h>
+#include <kernel/causal_bp_seq.h>
 #include <lbp/bp.h>
 #include <lbp/properties.h>
+#include <utils/utils.h>
 using namespace lbp;
 
+#include <nvml.h>
 #include <cassert>
-#include <chrono>
 #include <ctime>
 #include <iostream>
 #include <map>
@@ -12,14 +14,6 @@ using namespace lbp;
 #include <vector>
 #include <queue>
 using namespace std;
-
-static inline std::string nowstr() {
-    auto today = std::chrono::system_clock::now();
-    time_t tt = std::chrono::system_clock::to_time_t(today);
-    std::string ans = ctime(&tt);
-    return ans.substr(0, ans.size() - 1);
-}
-#define __LOGSTR__ (nowstr() + " " + __FILE__ + ": " + (std::to_string)(__LINE__) + ". ")
 
 static bool is_causal;
 static FactorGraph fg;
@@ -109,11 +103,62 @@ void unclamp() {
     cout << "UC " << varIndex << endl;
 }
 
+void show_help(const char *program) {
+    cerr << "Usage: " << program << " <filename> [<seed>] [<--auto|--manual id>]\n"
+        << "Options:\n"
+        << "  --auto        Automatically select which GPU device to run on.\n"
+        << "  --manual id   Manually specify the GPU device ID to run on.\n";
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         cerr << __LOGSTR__ << "Insufficient number of arguments." << endl;
+        show_help(argv[0]);
         return 1;
+    } else if (argc > 2) {
+        size_t seed = std::stoi(argv[2]);
+        clog << __LOGSTR__ << "Setting random seed: " << seed << endl; 
+        rnd_gen.seed(static_cast<unsigned int>(seed));
+        if (argc > 3) {
+            int device_id = 0;
+            std::string arg = argv[3];
+            if (arg == "--auto") {
+                nvmlInit();
+                int device_count;
+                nvmlDevice_t device;
+                nvmlUtilization_t utilization;
+                cudaGetDeviceCount(&device_count);
+                unsigned int min_util = 101;
+                for (int i = 0; i < device_count; i++) {
+                    nvmlDeviceGetHandleByIndex(i, &device);
+                    nvmlDeviceGetUtilizationRates(device, &utilization);
+                    unsigned int cur_util = utilization.gpu;
+                    if (cur_util < min_util) {
+                        min_util = cur_util;
+                        device_id = i;
+                    }
+                }
+                nvmlShutdown();
+            } else if (arg == "--manual") {
+                if (argc <= 4) {
+                    cerr << __LOGSTR__ << "--manual requires one integer argument for the GPU device ID." << endl;
+                    show_help(argv[0]);
+                    return 1;
+                }
+                device_id = std::stoi(argv[4]);
+            } else {
+                cerr << __LOGSTR__ << "Wrong arguments." << endl;
+                show_help(argv[0]);
+                return 1;
+            }
+            clog << __LOGSTR__ << "Setting device ID: " << device_id << endl;
+            cudaError_t err = cudaSetDevice(device_id);
+            if (err != cudaSuccess) {
+                clog << __LOGSTR__ << "Failed to set device " << device_id << ": " << cudaGetErrorString(err) << endl;
+            }
+        }
     }
+    kernel::streamCreate();
     factorGraphFileName = argv[1];
     is_causal = factorGraphFileName.substr(
             factorGraphFileName.find_last_of(".") + 1
@@ -125,11 +170,7 @@ int main(int argc, char *argv[]) {
     else
         fg.ReadFromFile(factorGraphFileName.c_str());
     clog << __LOGSTR__ << "Finished reading factor graph." << endl;
-    // if (argc > 2) {
-    //     size_t seed = std::stoi(argv[2]);
-    //     clog << __LOGSTR__ << "Setting random seed: " << seed << endl; 
-    //     dai::rnd_seed(seed);
-    // }
+    
     opts.set("maxiter", static_cast<size_t>(10000000));
     opts.set("maxtime", Real(57600));
     opts.set("tol", Real(1e-6));

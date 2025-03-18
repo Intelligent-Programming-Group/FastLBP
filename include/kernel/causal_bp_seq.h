@@ -15,11 +15,7 @@ namespace kernel {
 class StreamHelper {
 public:
     cudaStream_t stream[NSTREAM];
-    StreamHelper() {
-        for (int i = 0; i < NSTREAM; i++) {
-            cudaStreamCreate(&stream[i]);
-        }
-    }
+    StreamHelper() {}
     ~StreamHelper() {
         for (int i = 0; i < NSTREAM; i++) {
             cudaStreamDestroy(stream[i]);
@@ -30,6 +26,8 @@ public:
 extern StreamHelper stream_helper;
 
 void streamSynchronize();
+
+void streamCreate();
 
 void calcBeliefsV(
     Real *output, 

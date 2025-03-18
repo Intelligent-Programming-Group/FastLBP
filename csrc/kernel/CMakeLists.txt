@@ -10,5 +10,4 @@ add_library(kernel STATIC
 # )
 
 # Link CUDA library to ensure correct linking
-target_link_libraries(kernel PUBLIC cusparse)
 target_include_directories(kernel PUBLIC ${PROJECT_SOURCE_DIR}/include)

@@ -6,6 +6,7 @@ add_executable(example_ext_clamp example_ext_clamp.cu)
 
 # target_link_libraries(bingo_wrapper_topo ext)
 target_link_libraries(bingo_wrapper ext)
+target_link_libraries(bingo_wrapper CUDA::nvml)
 target_link_libraries(example lbp)
 target_link_libraries(example_ext ext)
 target_link_libraries(example_ext_clamp ext)

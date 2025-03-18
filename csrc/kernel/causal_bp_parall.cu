@@ -3,7 +3,6 @@
 /// 
 /// @date 2025-03-07
 
-#include <cusparse.h>
 #include <thrust/device_vector.h>
 #include <kernel/causal_bp_parall.h>
 #include <kernel/causal_bp_seq.h>

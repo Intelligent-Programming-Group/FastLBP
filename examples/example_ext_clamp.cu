@@ -21,7 +21,9 @@ int main(int argc, char *argv[]) {
     CausalFactorGraph causal_fg;
     cout << "start reading file..." << endl;
     causal_fg.ReadFromFile(argv[1]);
-    // causal_fg.clamp(19827, false);
+    // causal_fg.clamp(55472, false);
+    // causal_fg.clamp(259047, false);
+    // causal_fg.clamp(259065, true);
     // size_t maxstates = 1000000;
 
     // Set some constants
@@ -37,7 +39,7 @@ int main(int argc, char *argv[]) {
     opts.set("verbose", verb);     // Verbosity (amount of output generated)
     opts.set("maxtime", maxtime);
     opts.set("logdomain", false);
-    opts.set("updates", string("PARALL")); // "SEQRND", or "PARALL", or "SEQFIX"
+    opts.set("updates", string("SEQFIX")); // "SEQRND", or "PARALL", or "SEQFIX"
 
     // Construct a BP (belief propagation) object from the FactorGraph fg
     // using the parameters specified by opts and two additional properties,
@@ -51,10 +53,10 @@ int main(int argc, char *argv[]) {
     std::cout << "yetToConverge: " << yetToConvergeFraction << std::endl;
  
     // Report variable marginals for fg, calculated by the belief propagation algorithm
-    cout << "Approximate (loopy belief propagation) variable marginals:" << endl;
-    for ( size_t i = 0; i < causal_fg.nrVars(); i++ ) { // iterate over all variables in fg
-        cout << causal_bp.belief(causal_fg.var(i)) << endl; // display the belief of bp for that variable
-    }
+    // cout << "Approximate (loopy belief propagation) variable marginals:" << endl;
+    // for ( size_t i = 0; i < causal_fg.nrVars(); i++ ) { // iterate over all variables in fg
+    //     cout << causal_bp.belief(causal_fg.var(i)) << endl; // display the belief of bp for that variable
+    // }
 
     // // Report factor marginals for fg, calculated by the belief propagation algorithm
     // cout << "Approximate (loopy belief propagation) factor marginals:" << endl;
