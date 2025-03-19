@@ -26,11 +26,13 @@ void streamCreate() {
 
 inline static __device__ void scale(Real &x, Real &y) {
     Real m = fmax(x, y);
-    // if (m == 0.0) {
-    //     printf("scale error\n");
+    // if (m != 0.0) {  
+        x /= m;
+        y /= m;
+    // } else {
+    //     x = 0.5;
+    //     y = 0.5;
     // }
-    x /= m;
-    y /= m;
 }
 
 // static __device__ void scale_debug(Real &x, Real &y, size_t lineno) {
@@ -53,36 +55,36 @@ inline __device__ void update_message(
     size_t zero_cnt_0 = num_zeros_0[v], zero_cnt_1 = num_zeros_1[v];
 
     // The code below is the optimized version of the code in the annotation.
-    // if (old_msg_0 == 0) {
-    //     zero_cnt_0--;
-    // } else {
-    //     prod_0 /= old_msg_0;
-    // }
-    // if (marg0 == 0) {
-    //     zero_cnt_0++;
-    // } else {
-    //     prod_0 *= marg0;
-    // }
-    // if (old_msg_1 == 0) {
-    //     zero_cnt_1--;
-    // } else {
-    //     prod_1 /= old_msg_1;
-    // }
-    // if (marg1 == 0) {
-    //     zero_cnt_1++;
-    // } else {
-    //     prod_1 *= marg1;
-    // }
+    if (old_msg_0 == 0) {
+        zero_cnt_0--;
+    } else {
+        prod_0 /= old_msg_0;
+    }
+    if (marg0 == 0) {
+        zero_cnt_0++;
+    } else {
+        prod_0 *= marg0;
+    }
+    if (old_msg_1 == 0) {
+        zero_cnt_1--;
+    } else {
+        prod_1 /= old_msg_1;
+    }
+    if (marg1 == 0) {
+        zero_cnt_1++;
+    } else {
+        prod_1 *= marg1;
+    }
     // Optimize using masks.
-    Real mask0 = old_msg_0 == 0;
-    Real mask1 = marg0 == 0;
-    zero_cnt_0 += mask1 - mask0;
-    prod_0 *= ((1.0 - mask1) * marg0 + mask1) / ((1.0 - mask0) * old_msg_0 + mask0);
+    // Real mask0 = old_msg_0 == 0;
+    // Real mask1 = marg0 == 0;
+    // zero_cnt_0 += mask1 - mask0;
+    // prod_0 *= ((1.0 - mask1) * marg0 + mask1) / ((1.0 - mask0) * old_msg_0 + mask0);
 
-    Real mask2 = old_msg_1 == 0;
-    Real mask3 = marg1 == 0;
-    zero_cnt_1 += mask3 - mask2;
-    prod_1 *= ((1.0 - mask3) * marg1 + mask3) / ((1.0 - mask2) * old_msg_1 + mask2);
+    // Real mask2 = old_msg_1 == 0;
+    // Real mask3 = marg1 == 0;
+    // zero_cnt_1 += mask3 - mask2;
+    // prod_1 *= ((1.0 - mask3) * marg1 + mask3) / ((1.0 - mask2) * old_msg_1 + mask2);
     scale(prod_0, prod_1);
 
     prod_fv_0[v] = prod_0;

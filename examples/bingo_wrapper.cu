@@ -104,7 +104,7 @@ void unclamp() {
 }
 
 void show_help(const char *program) {
-    cerr << "Usage: " << program << " <filename> [<seed>] [<--auto|--manual id>]\n"
+    cerr << "Usage: " << program << " <filename> [<seed> <--auto|--manual id>]\n"
         << "Options:\n"
         << "  --auto        Automatically select which GPU device to run on.\n"
         << "  --manual id   Manually specify the GPU device ID to run on.\n";
