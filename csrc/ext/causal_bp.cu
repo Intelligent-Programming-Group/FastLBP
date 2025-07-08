@@ -1008,37 +1008,18 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
             nonConverged.begin(), nonConverged.end(), 0, thrust::plus<size_t>()
         );
 
-        // thrust::host_vector<Real> bel(_oldBeliefsV);
-        // thrust::host_vector<Real> dist(beliefsVDiff);
-        // // // calculate new beliefs and compare with old ones
-        // // std::map<int, size_t> diffHistogram;
-        // // const int minBucketIndex = -1;
-        // // int maxBucketIndex = 0;
+        thrust::host_vector<Real> bel(_oldBeliefsV);
 
-        // for( size_t i = 0; i < nrVars(); ++i ) {
-        //     Factor b( beliefV(i) );
-        //     Real iDist = dist[i];
-        //     if (iDist == 1) {
-        //         std::cerr << "you diff is one! fuck you asshole!    " << i  << ": " << bel[i] << std::endl;
-        //     }
-
-        //     // if (iDist == 0) {
-        //     //     diffHistogram[minBucketIndex]++;
-        //     // } else {
-        //     //     int bucketIndex = std::max(int(ceil(log2(iDist) - log2(props.tol))), minBucketIndex);
-        //     //     diffHistogram[bucketIndex]++;
-        //     //     maxBucketIndex = std::max(maxBucketIndex, bucketIndex);
-        //     // }
-
-        //     // auto newBelief = newBeliefsV[i];
-        //     // auto newBeliefType = fpclassify(newBelief);
-        //     // if (newBeliefType == FP_NORMAL || newBeliefType == FP_SUBNORMAL || newBeliefType == FP_ZERO) {
-        //     //     beliefHist[i].push(newBelief);
-        //     // }
-        //     // if (beliefHist[i].size() > histLength) {
-        //     //     beliefHist[i].pop();
-        //     // }
-        // }
+        for( size_t i = 0; i < nrVars(); ++i ) {
+            auto newBelief = bel[i];
+            auto newBeliefType = fpclassify(newBelief);
+            if (newBeliefType == FP_NORMAL || newBeliefType == FP_SUBNORMAL || newBeliefType == FP_ZERO) {
+                beliefHist[i].push(newBelief);
+            }
+            if (beliefHist[i].size() > histLength) {
+                beliefHist[i].pop();
+            }
+        }
 
         yetToConvergeFraction = Real(nonConvergedElems) / nrVars();
         // break;
@@ -1052,9 +1033,9 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
     if( maxDiff > _maxdiff )
         _maxdiff = maxDiff;
 
-    transferMessageToHost();
     switch (returnReason) {
     case RunReturnReason::ALL_CONVERGED:
+        transferMessageToHost();
         _lowPassBeliefs = std::vector<Real>(nrVars());
         for (size_t i = 0; i < nrVars(); i++) {
             _lowPassBeliefs[i] = _beliefsV[i];
@@ -1062,20 +1043,20 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
         break;
     case RunReturnReason::BIG_FRAC_CONVERGED:
     case RunReturnReason::DIVERGED:
-        // _lowPassBeliefs = std::vector<Real>(nrVars());
-        // for (size_t i = 0; i < nrVars(); i++) {
-        //     assert(beliefHist[i].size() <= histLength);
-        //     size_t denom = beliefHist[i].size();
-        //     while (!beliefHist[i].empty()) {
-        //         _lowPassBeliefs[i] += beliefHist[i].front();
-        //         beliefHist[i].pop();
-        //     }
-        //     if (denom > 0) { _lowPassBeliefs[i] /= denom; }
-        // }
         _lowPassBeliefs = std::vector<Real>(nrVars());
         for (size_t i = 0; i < nrVars(); i++) {
-            _lowPassBeliefs[i] = _beliefsV[i];
+            assert(beliefHist[i].size() <= histLength);
+            size_t denom = beliefHist[i].size();
+            while (!beliefHist[i].empty()) {
+                _lowPassBeliefs[i] += beliefHist[i].front();
+                beliefHist[i].pop();
+            }
+            if (denom > 0) { _lowPassBeliefs[i] /= denom; }
         }
+        // _lowPassBeliefs = std::vector<Real>(nrVars());
+        // for (size_t i = 0; i < nrVars(); i++) {
+        //     _lowPassBeliefs[i] = _beliefsV[i];
+        // }
         break;
     }
 
