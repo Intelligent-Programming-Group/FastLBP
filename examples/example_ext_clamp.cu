@@ -39,7 +39,7 @@ int main(int argc, char *argv[]) {
     opts.set("verbose", verb);     // Verbosity (amount of output generated)
     opts.set("maxtime", maxtime);
     opts.set("logdomain", false);
-    opts.set("updates", string("SEQFIX")); // "SEQRND", or "PARALL", or "SEQFIX"
+    opts.set("updates", string("SEQFIX")); // "PARALL", "SEQFIX", or "TOPO"
 
     // Construct a BP (belief propagation) object from the FactorGraph fg
     // using the parameters specified by opts and two additional properties,

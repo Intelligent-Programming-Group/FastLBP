@@ -77,6 +77,11 @@ public:
     /// Returns constant iterator that points beyond the last element
     const_iterator end() const { return _p.end(); }
 
+    /// Gets \a i 'th entry
+    T get( size_t i ) const { 
+        return _p.at(i);
+    }
+
     /// @brief Sets `i`'th entry to `val`
     /// @param i 
     /// @param val 
@@ -141,6 +146,15 @@ public:
 
     this_type &operator*=(const this_type &q) { return pwBinaryOp( q, std::multiplies<T>() ); }
 };
+
+/// Writes a TProb<T> to an output stream
+template<typename T> std::ostream& operator<< (std::ostream& os, const TProb<T>& p) {
+    os << "(";
+    for( size_t i = 0; i < p.size(); i++ )
+        os << ((i != 0) ? ", " : "") << p.get(i);
+    os << ")";
+    return os;
+}
 
 /// @brief Represents a vector with entries of type Real.
 typedef TProb<Real> Prob;

@@ -79,6 +79,10 @@ const std::vector<Var> &CausalFactorGraph::vars() const {
     return _vars;
 }
 
+const std::vector<CausalFactor> &CausalFactorGraph::factors() const {
+    return _factors;
+}
+
 const Neighbors &CausalFactorGraph::nbV(size_t i) const {
     return _G.nb1(i);
 }

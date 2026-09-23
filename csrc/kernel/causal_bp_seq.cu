@@ -10,29 +10,16 @@
 namespace lbp {
 namespace kernel {
 
-StreamHelper stream_helper;
-
-void streamSynchronize() {
-    for (int i = 0; i < NSTREAM; i++) {
-        cudaStreamSynchronize(stream_helper.stream[i]);
-    }
-}
-
-void streamCreate() {
-    for (int i = 0; i < NSTREAM; i++) {
-        cudaStreamCreate(&stream_helper.stream[i]);
-    }
-}
-
 inline static __device__ void scale(Real &x, Real &y) {
-    Real m = fmax(x, y);
-    // if (m != 0.0) {  
-        x /= m;
-        y /= m;
-    // } else {
-    //     x = 0.5;
-    //     y = 0.5;
-    // }
+    if (x < y) {
+        x = x / y;
+        y = 1.0;
+    } else if (y < x) {
+        y = y / x;
+        x = 1.0;
+    } else {
+        x = y = 1.0; // or 0.5 if both zero?
+    }
 }
 
 // static __device__ void scale_debug(Real &x, Real &y, size_t lineno) {
@@ -47,7 +34,7 @@ inline static __device__ void scale(Real &x, Real &y) {
 inline __device__ void update_message(
     Real *message_fv_0, Real *message_fv_1, 
     Real *prod_fv_0, Real *prod_fv_1, 
-    size_t *num_zeros_0, size_t *num_zeros_1, 
+    Size *num_zeros_0, Size *num_zeros_1, 
     size_t ind, size_t v, Real marg0, Real marg1
 ) {
     Real old_msg_0 = message_fv_0[ind], old_msg_1 = message_fv_1[ind];
@@ -98,8 +85,8 @@ inline __device__ void update_message(
 __global__ void calcBeliefsVKernel(
     Real *output, 
     const Real *message, 
-    const size_t *row_ptr, 
-    const size_t *col_ind, 
+    const Size *row_ptr, 
+    const Size *col_ind, 
     size_t n
 ) {
     CUDA_KERNEL_LOOP(i, n) {
@@ -115,7 +102,7 @@ __global__ void calcBeliefsVKernel(
 __global__ void getBeliefsVKernel(
     Real *output, 
     const Real *prod, 
-    const size_t *num_zeros, 
+    const Size *num_zeros, 
     size_t n
 ) {
     CUDA_KERNEL_LOOP(i, n) {
@@ -130,8 +117,8 @@ __global__ void calcMessageVFKernel(
     const Real *message_fv_1, 
     const Real *prod_fv_0,
     const Real *prod_fv_1,
-    const size_t *num_zeros_0, 
-    const size_t *num_zeros_1, 
+    const Size *num_zeros_0, 
+    const Size *num_zeros_1, 
     const Index3 *ind_vf, 
     size_t n
 ) {
@@ -159,511 +146,311 @@ __global__ void calcMessageVFKernel(
     }
 }
 
-__global__ void calcMessageFVIKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index2Real *ind_fv_i,
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index2Real index = ind_fv_i[i];
-        size_t ind = index.ind, v = index.v;
-        Real p1 = index.prob;
-
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, 1 - p1, p1
-        );
-    }
-}
-
-__global__ void calcMessageFVAndTDKernel(
+__global__ void calcMessageFVFusedKernel(
     Real *message_fv_0, 
     Real *message_fv_1, 
     const Real *message_vf_0, 
     const Real *message_vf_1, 
     Real *prod_fv_0,
     Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real2 *ind_fv_and_td, 
+    Size *num_zeros_0, 
+    Size *num_zeros_1, 
+    const Index7Real4 *ind_fv, 
     size_t n
 ) {
     CUDA_KERNEL_LOOP(i, n) {
-        Index5Real2 index = ind_fv_and_td[i];
-        size_t ind = index.ind;
-        size_t src_ind = index.src_ind, v = index.v;
-        Real p0 = index.prob_default, p1 = index.prob;
-        size_t start_ind = index.start_ind, end_ind = index.end_ind;
-        Real prod_1 = 1.0, prod_10 = 1.0;
-        Real marg0, marg1;
-        if (end_ind - start_ind == 1) {
-            marg0 = 1 - p1;
-            marg1 = p1;
-        } else if (end_ind - start_ind == 2) {
-            size_t j = start_ind;
-            if (start_ind == src_ind) {
-                j++;
-            }
-            Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-            marg0 = (1 - p1) * m_1 + (1 - p0) * m_0;
-            marg1 = p1 * m_1 + p0 * m_0;
-        } else {
-            Real e1 = 0;
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if (j != src_ind) {
-                    Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-                    Real a0 = m_0 + m_1, a1 = m_1;
-                    prod_1 *= a1;
-                    prod_10 *= a0;
-                    scale(prod_1, prod_10);
-                    Real delta = m_0;
-                    if (a1 != 0 && a0 == a1 && delta != 0) {
-                        e1 += delta / a1;
-                    }
-                }
-            }
-            marg0 = (1 - p1) * prod_1 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_1));
-            marg1 = p1 * prod_1 + p0 * (e1 * prod_10 + (prod_10 - prod_1));
-        }
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {   
-            // printf("p0=%lf p1=%lf prod1=%lf prod10=%lf\n", p0, p1, prod_1, prod_10);
-            marg0 = 0.5;
-            marg1 = 0.5;
-        }
-
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, marg0, marg1
-        );
-    }
-}
-
-__global__ void calcMessageFVOrTDKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real2 *ind_fv_or_td, 
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index5Real2 index = ind_fv_or_td[i];
-        size_t ind = index.ind;
-        size_t src_ind = index.src_ind, v = index.v;
-        Real p0 = index.prob_default, p1 = index.prob;
-        Real prod_0 = 1.0, prod_10 = 1.0;
-        size_t start_ind = index.start_ind, end_ind = index.end_ind;
-        Real marg0, marg1;
-        if (end_ind - start_ind == 1) {
-            marg0 = p1;
-            marg1 = 1 - p1;
-        } else if (end_ind - start_ind == 2) {
-            size_t j = start_ind;
-            if (start_ind == src_ind) {
-                j++;
-            }
-            Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-            marg0 = p1 * m_0 + p0 * m_1;
-            marg1 = (1 - p1) * m_0 + (1 - p0) * m_1;
-        } else {    
-            Real e1 = 0;
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if (j != src_ind) {
-                    Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-                    Real a0 = m_0 + m_1, a1 = m_0;
-                    prod_0 *= a1;
-                    prod_10 *= a0;
-                    scale(prod_0, prod_10);
-                    Real delta = m_1;
-                    if (a1 != 0 && a0 == a1 && delta != 0) {
-                        e1 += delta / a1;
-                    }
-                }
-            }
-            marg0 = p1 * prod_0 + p0 * (e1 * prod_10 + (prod_10 - prod_0));
-            marg1 = (1 - p1) * prod_0 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_0));
-        }
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {  
-            // printf("503 p0=%lf p1=%lf prod0=%lf prod10=%lf\n", p0, p1, prod_0, prod_10); 
-            marg0 = 0.5;
-            marg1 = 0.5;
-        }
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, marg0, marg1
-        );
-    }
-}
-
-__global__ void calcMessageFVAndTDClampedKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real4 *ind_fv_and_td,
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index5Real4 index = ind_fv_and_td[i];
+        Index7Real4 index = ind_fv[i];
         size_t ind = index.ind, src_ind = index.src_ind, v = index.v;
-        Real p0 = index.prob_default, p1 = index.prob;
+        size_t h = index.head, type = index.type;
         size_t start_ind = index.start_ind, end_ind = index.end_ind;
+        Real p0 = index.prob_default, p1 = index.prob;
         Real mask0 = index.mask0, mask1 = index.mask1;
-        Real prod_1 = 1.0, prod_10 = 1.0;
         Real marg0, marg1;
-        if (end_ind - start_ind == 1) {
+        if (type == 0) {
             marg0 = 1 - p1;
             marg1 = p1;
-        } else if (end_ind - start_ind == 2) {
-            size_t j = start_ind;
-            if (start_ind == src_ind) {
-                j++;
+        } else if (type == 1) {
+            Real prod_1 = 1.0, prod_10 = 1.0;
+            if (end_ind - start_ind == 1) {
+                marg0 = 1 - p1;
+                marg1 = p1;
+            } else if (end_ind - start_ind == 2) {
+                size_t j = start_ind;
+                if (start_ind == src_ind) {
+                    j++;
+                }
+                Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                marg0 = (1 - p1) * m_1 + (1 - p0) * m_0;
+                marg1 = p1 * m_1 + p0 * m_0;
+            } else {
+                Real e1 = 0;
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if (j != src_ind) {
+                        Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                        Real a0 = m_0 + m_1, a1 = m_1;
+                        prod_1 *= a1;
+                        prod_10 *= a0;
+                        scale(prod_1, prod_10);
+                        Real delta = m_0;
+                        if (a1 != 0 && a0 == a1 && delta != 0) {
+                            e1 += delta / a1;
+                        }
+                    }
+                }
+                marg0 = (1 - p1) * prod_1 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_1));
+                marg1 = p1 * prod_1 + p0 * (e1 * prod_10 + (prod_10 - prod_1));
             }
-            Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-            marg0 = (1 - p1) * m_1 + (1 - p0) * m_0;
-            marg1 = p1 * m_1 + p0 * m_0;
-        } else {
-            Real e1 = 0;
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if (j != src_ind) {
-                    Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-                    Real a0 = m_0 + m_1, a1 = m_1;
-                    prod_1 *= a1;
-                    prod_10 *= a0;
-                    scale(prod_1, prod_10);
-                    Real delta = m_0;
-                    if (a1 != 0 && a0 == a1 && delta != 0) {
-                        e1 += delta / a1;
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {   
+                marg0 = 0.5;
+                marg1 = 0.5;
+            }
+        } else if (type == 2) {
+            Real prod_0 = 1.0, prod_10 = 1.0;
+            if (end_ind - start_ind == 1) {
+                marg0 = p1;
+                marg1 = 1 - p1;
+            } else if (end_ind - start_ind == 2) {
+                size_t j = start_ind;
+                if (start_ind == src_ind) {
+                    j++;
+                }
+                Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                marg0 = p1 * m_0 + p0 * m_1;
+                marg1 = (1 - p1) * m_0 + (1 - p0) * m_1;
+            } else {    
+                Real e1 = 0;
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if (j != src_ind) {
+                        Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                        Real a0 = m_0 + m_1, a1 = m_0;
+                        prod_0 *= a1;
+                        prod_10 *= a0;
+                        scale(prod_0, prod_10);
+                        Real delta = m_1;
+                        if (a1 != 0 && a0 == a1 && delta != 0) {
+                            e1 += delta / a1;
+                        }
+                    }
+                }
+                marg0 = p1 * prod_0 + p0 * (e1 * prod_10 + (prod_10 - prod_0));
+                marg1 = (1 - p1) * prod_0 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_0));
+            }
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {  
+                marg0 = 0.5;
+                marg1 = 0.5;
+            }
+        } else if (type == 3) {
+            Real prod_1 = 1.0, prod_10 = 1.0;
+            if (end_ind - start_ind == 1) {
+                marg0 = 1 - p1;
+                marg1 = p1;
+            } else if (end_ind - start_ind == 2) {
+                size_t j = start_ind;
+                if (start_ind == src_ind) {
+                    j++;
+                }
+                Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                marg0 = (1 - p1) * m_1 + (1 - p0) * m_0;
+                marg1 = p1 * m_1 + p0 * m_0;
+            } else {
+                Real e1 = 0;
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if (j != src_ind) {
+                        Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                        Real a0 = m_0 + m_1, a1 = m_1;
+                        prod_1 *= a1;
+                        prod_10 *= a0;
+                        scale(prod_1, prod_10);
+                        Real delta = m_0;
+                        if (a1 != 0 && a0 == a1 && delta != 0) {
+                            e1 += delta / a1;
+                        }
+                    }
+                }
+                marg0 = (1 - p1) * prod_1 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_1));
+                marg1 = p1 * prod_1 + p0 * (e1 * prod_10 + (prod_10 - prod_1));
+            }
+            marg0 *= mask0;
+            marg1 *= mask1;
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {   
+                if (mask0 == 0) {
+                    marg0 = 0.0;
+                    marg1 = 1.0;
+                } else if (mask1 == 0) {
+                    marg0 = 1.0;
+                    marg1 = 0.0;
+                } else {
+                    marg0 = 0.5;
+                    marg1 = 0.5;
+                }
+            }
+        } else if (type == 4) {
+            Real prod_0 = 1.0, prod_10 = 1.0;
+            if (end_ind - start_ind == 1) {
+                marg0 = p1;
+                marg1 = 1 - p1;
+            } else if (end_ind - start_ind == 2) {
+                size_t j = start_ind;
+                if (start_ind == src_ind) {
+                    j++;
+                }
+                Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                marg0 = p1 * m_0 + p0 * m_1;
+                marg1 = (1 - p1) * m_0 + (1 - p0) * m_1;
+            } else {    
+                Real e1 = 0;
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if (j != src_ind) {
+                        Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
+                        Real a0 = m_0 + m_1, a1 = m_0;
+                        prod_0 *= a1;
+                        prod_10 *= a0;
+                        scale(prod_0, prod_10);
+                        Real delta = m_1;
+                        if (a1 != 0 && a0 == a1 && delta != 0) {
+                            e1 += delta / a1;
+                        }
+                    }
+                }
+                marg0 = p1 * prod_0 + p0 * (e1 * prod_10 + (prod_10 - prod_0));
+                marg1 = (1 - p1) * prod_0 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_0));
+            }
+            marg0 *= mask0;
+            marg1 *= mask1;
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {   
+                if (mask0 == 0) {
+                    marg0 = 0.0;
+                    marg1 = 1.0;
+                } else if (mask1 == 0) {
+                    marg0 = 1.0;
+                    marg1 = 0.0;
+                } else {
+                    marg0 = 0.5;
+                    marg1 = 0.5;
+                }
+            }
+        } else if (type == 5) {
+            Real m0h = message_vf_0[h], m1h = message_vf_1[h];
+            Real prod_1 = (p1 - p0) * (m1h - m0h);
+            Real prod_10 = p0 * m1h + (1 - p0) * m0h;
+            scale(prod_1, prod_10);
+            if (prod_10 != 0) {
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if ((j != src_ind) && (j != h)) {
+                        Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1;
+                        prod_10 *= m;
+                        prod_1 *= m1;
+                        scale(prod_1, prod_10);
                     }
                 }
             }
-            marg0 = (1 - p1) * prod_1 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_1));
-            marg1 = p1 * prod_1 + p0 * (e1 * prod_10 + (prod_10 - prod_1));
-        }
-        marg0 *= mask0;
-        marg1 *= mask1;
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {   
-            // printf("p0=%lf p1=%lf prod1=%lf prod10=%lf\n", p0, p1, prod_1, prod_10);
-            if (mask0 == 0) {
-                marg0 = 0.0;
-                marg1 = 1.0;
-            } else if (mask1 == 0) {
-                marg0 = 1.0;
-                marg1 = 0.0;
-            } else {
+
+            marg0 = prod_10;
+            marg1 = prod_10 + prod_1;
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {   
+                marg0 = 0.5;
+                marg1 = 0.5;
+            }
+        } else if (type == 6) {
+            Real m0h = message_vf_0[h], m1h = message_vf_1[h];
+            Real prod_0 = (p1 - p0) * (m0h - m1h);
+            Real prod_10 = p0 * m0h + (1 - p0) * m1h;
+            scale(prod_0, prod_10);
+            if (prod_10 != 0) {
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if ((j != src_ind) && (j != h)) {
+                        Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1; 
+                        prod_10 *= m;
+                        prod_0 *= m0;
+                        scale(prod_0, prod_10);
+                    }
+                }
+            }
+
+            marg0 = prod_0 + prod_10;
+            marg1 = prod_10;
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {   
+                marg0 = 0.5;
+                marg1 = 0.5;
+            }
+        } else if (type == 7) {
+            Real m0h = message_vf_0[h], m1h = message_vf_1[h];
+            Real prod_1 = (p1 - p0) * (m1h * mask1 - m0h * mask0);
+            Real prod_10 = p0 * m1h * mask1 + (1 - p0) * m0h * mask0;
+            scale(prod_1, prod_10);
+            if (prod_10 != 0) {
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if ((j != src_ind) && (j != h)) {
+                        Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1;
+                        prod_10 *= m;
+                        prod_1 *= m1;
+                        scale(prod_1, prod_10);
+                    }
+                }
+            }
+
+            marg0 = prod_10;
+            marg1 = prod_10 + prod_1;
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {   
+                marg0 = 0.5;
+                marg1 = 0.5;
+            }
+        } else if (type == 8) {
+            Real m0h = message_vf_0[h], m1h = message_vf_1[h];
+            Real prod_0 = (p1 - p0) * (m0h * mask0 - m1h * mask1);
+            Real prod_10 = p0 * m0h * mask0 + (1 - p0) * m1h * mask1;
+            scale(prod_0, prod_10);
+            if (prod_10 != 0) {
+                for (size_t j = start_ind; j < end_ind; j++) {
+                    if ((j != src_ind) && (j != h)) {
+                        Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1; 
+                        prod_10 *= m;
+                        prod_0 *= m0;
+                        scale(prod_0, prod_10);
+                    }
+                }
+            }
+
+            marg0 = prod_0 + prod_10;
+            marg1 = prod_10;
+            Real marg = marg0 + marg1;
+            if (marg != 0) {
+                marg0 = marg0 / marg;
+                marg1 = marg1 / marg;
+            } else {   
                 marg0 = 0.5;
                 marg1 = 0.5;
             }
         }
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, marg0, marg1
-        );
-    }
-}
 
-__global__ void calcMessageFVOrTDClampedKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real4 *ind_fv_or_td,
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index5Real4 index = ind_fv_or_td[i];
-        size_t ind = index.ind, src_ind = index.src_ind, v = index.v;
-        Real p0 = index.prob_default, p1 = index.prob;
-        size_t start_ind = index.start_ind, end_ind = index.end_ind;
-        Real mask0 = index.mask0, mask1 = index.mask1;
-        Real prod_0 = 1.0, prod_10 = 1.0;
-        Real marg0, marg1;
-        if (end_ind - start_ind == 1) {
-            marg0 = p1;
-            marg1 = 1 - p1;
-        } else if (end_ind - start_ind == 2) {
-            size_t j = start_ind;
-            if (start_ind == src_ind) {
-                j++;
-            }
-            Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-            marg0 = p1 * m_0 + p0 * m_1;
-            marg1 = (1 - p1) * m_0 + (1 - p0) * m_1;
-        } else {    
-            Real e1 = 0;
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if (j != src_ind) {
-                    Real m_0 = message_vf_0[j], m_1 = message_vf_1[j];
-                    Real a0 = m_0 + m_1, a1 = m_0;
-                    prod_0 *= a1;
-                    prod_10 *= a0;
-                    scale(prod_0, prod_10);
-                    Real delta = m_1;
-                    if (a1 != 0 && a0 == a1 && delta != 0) {
-                        e1 += delta / a1;
-                    }
-                }
-            }
-            marg0 = p1 * prod_0 + p0 * (e1 * prod_10 + (prod_10 - prod_0));
-            marg1 = (1 - p1) * prod_0 + (1 - p0) * (e1 * prod_10 + (prod_10 - prod_0));
-        }
-        marg0 *= mask0;
-        marg1 *= mask1;
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {   
-            if (mask0 == 0) {
-                marg0 = 0.0;
-                marg1 = 1.0;
-            } else if (mask1 == 0) {
-                marg0 = 1.0;
-                marg1 = 0.0;
-            } else {
-                marg0 = 0.5;
-                marg1 = 0.5;
-            }
-        }
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, marg0, marg1
-        );
-    }
-}
-
-__global__ void calcMessageFVAndBUKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real2 *ind_fv_and_bu, 
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index6Real2 index = ind_fv_and_bu[i];
-        size_t ind = index.ind, src_ind = index.src_ind, v = index.v;
-        size_t h = index.head;
-        size_t start_ind = index.start_ind, end_ind = index.end_ind;
-        Real p0 = index.prob_default, p1 = index.prob;
-        Real m0h = message_vf_0[h], m1h = message_vf_1[h];
-        Real prod_1 = (p1 - p0) * (m1h - m0h);
-        Real prod_10 = p0 * m1h + (1 - p0) * m0h;
-        scale(prod_1, prod_10);
-        Real marg0, marg1;
-        if (prod_10 != 0) {
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if ((j != src_ind) && (j != h)) {
-                    Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1;
-                    prod_10 *= m;
-                    prod_1 *= m1;
-                    scale(prod_1, prod_10);
-                }
-            }
-        }
-
-        marg0 = prod_10;
-        marg1 = prod_10 + prod_1;
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {   
-            // printf("%d prod1=%lf prod10=%lf\n",(int)__LINE__, prod_1, prod_10);
-            marg0 = 0.5;
-            marg1 = 0.5;
-        }
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, marg0, marg1
-        );
-    }
-}
-
-__global__ void calcMessageFVOrBUKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real2 *ind_fv_or_bu, 
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index6Real2 index = ind_fv_or_bu[i];
-        size_t ind = index.ind, src_ind = index.src_ind, v = index.v;
-        size_t h = index.head;
-        size_t start_ind = index.start_ind, end_ind = index.end_ind;
-        Real p0 = index.prob_default, p1 = index.prob;
-        Real m0h = message_vf_0[h], m1h = message_vf_1[h];
-        Real prod_0 = (p1 - p0) * (m0h - m1h);
-        Real prod_10 = p0 * m0h + (1 - p0) * m1h;
-        scale(prod_0, prod_10);
-        Real marg0, marg1;
-        if (prod_10 != 0) {
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if ((j != src_ind) && (j != h)) {
-                    Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1; 
-                    prod_10 *= m;
-                    prod_0 *= m0;
-                    scale(prod_0, prod_10);
-                }
-            }
-        }
-
-        marg0 = prod_0 + prod_10;
-        marg1 = prod_10;
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {   
-            // printf("%d prod0=%lf prod10=%lf\n", (int)__LINE__, prod_0, prod_10);
-            marg0 = 0.5;
-            marg1 = 0.5;
-        }
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, marg0, marg1
-        );
-    }
-}
-
-__global__ void calcMessageFVAndBUClampedKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real4 *ind_fv_and_bu, 
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index6Real4 index = ind_fv_and_bu[i];
-        size_t ind = index.ind, src_ind = index.src_ind, v = index.v;
-        size_t h = index.head;
-        size_t start_ind = index.start_ind, end_ind = index.end_ind;
-        Real p0 = index.prob_default, p1 = index.prob;
-        Real mask0 = index.mask0, mask1 = index.mask1;
-        Real m0h = message_vf_0[h], m1h = message_vf_1[h];
-        Real prod_1 = (p1 - p0) * (m1h * mask1 - m0h * mask0);
-        Real prod_10 = p0 * m1h * mask1 + (1 - p0) * m0h * mask0;
-        scale(prod_1, prod_10);
-        Real marg0, marg1;
-        if (prod_10 != 0) {
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if ((j != src_ind) && (j != h)) {
-                    Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1;
-                    prod_10 *= m;
-                    prod_1 *= m1;
-                    scale(prod_1, prod_10);
-                }
-            }
-        }
-
-        marg0 = prod_10;
-        marg1 = prod_10 + prod_1;
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {   
-            // printf("%d prod1=%lf prod10=%lf\n",(int)__LINE__, prod_1, prod_10);
-            marg0 = 0.5;
-            marg1 = 0.5;
-        }
-        update_message(
-            message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
-            num_zeros_0, num_zeros_1, ind, v, marg0, marg1
-        );
-    }
-}
-
-__global__ void calcMessageFVOrBUClampedKernel(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real4 *ind_fv_or_bu, 
-    size_t n
-) {
-    CUDA_KERNEL_LOOP(i, n) {
-        Index6Real4 index = ind_fv_or_bu[i];
-        size_t ind = index.ind, src_ind = index.src_ind, v = index.v;
-        size_t h = index.head;
-        size_t start_ind = index.start_ind, end_ind = index.end_ind;
-        Real p0 = index.prob_default, p1 = index.prob;
-        Real mask0 = index.mask0, mask1 = index.mask1;
-        Real m0h = message_vf_0[h], m1h = message_vf_1[h];
-        Real prod_0 = (p1 - p0) * (m0h * mask0 - m1h * mask1);
-        Real prod_10 = p0 * m0h * mask0 + (1 - p0) * m1h * mask1;
-        scale(prod_0, prod_10);
-        Real marg0, marg1;
-        if (prod_10 != 0) {
-            for (size_t j = start_ind; j < end_ind; j++) {
-                if ((j != src_ind) && (j != h)) {
-                    Real m0 = message_vf_0[j], m1 = message_vf_1[j], m = m0 + m1; 
-                    prod_10 *= m;
-                    prod_0 *= m0;
-                    scale(prod_0, prod_10);
-                }
-            }
-        }
-
-        marg0 = prod_0 + prod_10;
-        marg1 = prod_10;
-        Real marg = marg0 + marg1;
-        if (marg != 0) {
-            marg0 = marg0 / marg;
-            marg1 = marg1 / marg;
-        } else {   
-            // printf("%d prod0=%lf prod10=%lf\n", (int)__LINE__, prod_0, prod_10);
-            marg0 = 0.5;
-            marg1 = 0.5;
-        }
         update_message(
             message_fv_0, message_fv_1, prod_fv_0, prod_fv_1, 
             num_zeros_0, num_zeros_1, ind, v, marg0, marg1
@@ -674,8 +461,8 @@ __global__ void calcMessageFVOrBUClampedKernel(
 void calcBeliefsV(
     Real *output, 
     const Real *message, 
-    const size_t *row_ptr, 
-    const size_t *col_ind, 
+    const Size *row_ptr, 
+    const Size *col_ind, 
     size_t n
 ) {
     calcBeliefsVKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
@@ -686,7 +473,7 @@ void calcBeliefsV(
 void getBeliefsV(
     Real *output, 
     const Real *prod, 
-    const size_t *num_zeros, 
+    const Size *num_zeros, 
     size_t n
 ) {
     getBeliefsVKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
@@ -701,11 +488,14 @@ void calcMessageVF(
     const Real *message_fv_1, 
     const Real *prod_fv_0,
     const Real *prod_fv_1,
-    const size_t *num_zeros_0, 
-    const size_t *num_zeros_1, 
+    const Size *num_zeros_0, 
+    const Size *num_zeros_1, 
     const Index3 *ind_vf, 
     size_t n
 ) {
+    if (n == 0) {
+        return;
+    }
     calcMessageVFKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
         message_vf_0, 
         message_vf_1, 
@@ -720,403 +510,33 @@ void calcMessageVF(
     );
 }
 
-void calcMessageFVI(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index2Real *ind_fv_i, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVIKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_i, 
-            n
-        );
-    } else {
-        calcMessageFVIKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_i, 
-            n
-        );
-    }
-}
-
-void calcMessageFVAndTD(
+void calcMessageFVFused(
     Real *message_fv_0, 
     Real *message_fv_1, 
     const Real *message_vf_0, 
     const Real *message_vf_1, 
     Real *prod_fv_0,
     Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real2 *ind_fv_and_td, 
-    size_t n, 
-    int stream_no
+    Size *num_zeros_0, 
+    Size *num_zeros_1, 
+    const Index7Real4 *ind_fv, 
+    size_t n
 ) {
     if (n == 0) {
         return;
     }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVAndTDKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_td, 
-            n
-        );
-    } else {
-        calcMessageFVAndTDKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_td, 
-            n
-        );
-    }
-}
-
-void calcMessageFVOrTD(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real2 *ind_fv_or_td, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVOrTDKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_td, 
-            n
-        );
-    } else {
-        calcMessageFVOrTDKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_td, 
-            n
-        );
-    }
-}
-
-void calcMessageFVAndTDClamped(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real4 *ind_fv_and_td, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVAndTDClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_td, 
-            n
-        );
-    } else {
-        calcMessageFVAndTDClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_td, 
-            n
-        );
-    }
-}
-
-void calcMessageFVOrTDClamped(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index5Real4 *ind_fv_or_td, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVOrTDClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_td,
-            n
-        );
-    } else {
-        calcMessageFVOrTDClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_td,
-            n
-        );
-    }
-}
-
-void calcMessageFVAndBU(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real2 *ind_fv_and_bu, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVAndBUKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_bu, 
-            n
-        );
-    } else {
-        calcMessageFVAndBUKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_bu, 
-            n
-        );
-    }
-}
-
-void calcMessageFVOrBU(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real2 *ind_fv_or_bu, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVOrBUKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_bu, 
-            n
-        );
-    } else {
-        calcMessageFVOrBUKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_bu, 
-            n
-        );
-    }
-}
-
-void calcMessageFVAndBUClamped(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real4 *ind_fv_and_bu, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVAndBUClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_bu, 
-            n
-        );
-    } else {
-        calcMessageFVAndBUClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_and_bu, 
-            n
-        );
-    }
-}
-
-void calcMessageFVOrBUClamped(
-    Real *message_fv_0, 
-    Real *message_fv_1, 
-    const Real *message_vf_0, 
-    const Real *message_vf_1, 
-    Real *prod_fv_0,
-    Real *prod_fv_1,
-    size_t *num_zeros_0, 
-    size_t *num_zeros_1, 
-    const Index6Real4 *ind_fv_or_bu, 
-    size_t n, 
-    int stream_no
-) {
-    if (n == 0) {
-        return;
-    }
-    if (stream_no >= NSTREAM || stream_no < 0) {
-        calcMessageFVOrBUClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_bu, 
-            n
-        );
-    } else {
-        calcMessageFVOrBUClampedKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream_helper.stream[stream_no]>>>(
-            message_fv_0, 
-            message_fv_1, 
-            message_vf_0, 
-            message_vf_1, 
-            prod_fv_0,
-            prod_fv_1,
-            num_zeros_0, 
-            num_zeros_1, 
-            ind_fv_or_bu, 
-            n
-        );
-    }
+    calcMessageFVFusedKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
+        message_fv_0, 
+        message_fv_1, 
+        message_vf_0, 
+        message_vf_1, 
+        prod_fv_0,
+        prod_fv_1,
+        num_zeros_0, 
+        num_zeros_1, 
+        ind_fv, 
+        n
+    );
 }
 
 } // namespace kernel 

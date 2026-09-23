@@ -1,5 +1,4 @@
 add_library(kernel STATIC
-            bp.cu
             causal_bp_parall.cu
             causal_bp_seq.cu)
 

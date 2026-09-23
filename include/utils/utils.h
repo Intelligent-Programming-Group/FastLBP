@@ -19,33 +19,39 @@
 namespace lbp {
 
 typedef double Real;
+typedef size_t Size;
 
 struct Index2Real {
-    size_t ind, v;
+    Size ind, v;
     Real prob;
 };
 
 struct Index3 {
-    size_t ind, v, src_ind;
+    Size ind, v, src_ind;
 };
 
 struct Index5Real2 {
-    size_t ind, v, src_ind, start_ind, end_ind;
+    Size ind, v, src_ind, start_ind, end_ind;
     Real prob_default, prob;
 };
 
 struct Index5Real4 {
-    size_t ind, v, src_ind, start_ind, end_ind;
+    Size ind, v, src_ind, start_ind, end_ind;
     Real prob_default, prob, mask0, mask1;
 };
 
 struct Index6Real2 {
-    size_t ind, v, src_ind, start_ind, end_ind, head;
+    Size ind, v, src_ind, start_ind, end_ind, head;
     Real prob_default, prob;
 };
 
 struct Index6Real4 {
-    size_t ind, v, src_ind, start_ind, end_ind, head;
+    Size ind, v, src_ind, start_ind, end_ind, head;
+    Real prob_default, prob, mask0, mask1;
+};
+
+struct Index7Real4 {
+    Size ind, v, src_ind, start_ind, end_ind, head, type;
     Real prob_default, prob, mask0, mask1;
 };
 
@@ -89,6 +95,11 @@ std::ostream& operator << (std::ostream& os, const std::map<T1,T2> & x) {
     for ( typename std::map<T1,T2>::const_iterator it = x.begin(); it != x.end(); it++ )
         os << (it != x.begin() ? ", " : "") << it->first << "->" << it->second;
     os << "}";
+    return os;
+}
+
+inline std::ostream& operator << (std::ostream& os, const Index3 & x) {
+    os << x.ind;
     return os;
 }
 

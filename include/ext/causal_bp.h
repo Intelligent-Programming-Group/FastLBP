@@ -12,6 +12,7 @@
 #include <lbp/daialg.h>
 #include <lbp/properties.h>
 #include <utils/utils.h>
+#include <kernel/causal_bp_seq.h>
 
 namespace lbp {
 
@@ -23,12 +24,12 @@ private:
         /// @brief Enumeration of possible update schedules
         /// The following update schedules have been defined:
         ///  - SEQFIX sequential updates using a fixed sequence
-        ///  - SEQRND sequential updates using a random sequence
         ///  - PARALL parallel updates
+        ///  - TOPO topological preorder over a tree-shaped factor graph
         enum class UpdateType {
             SEQFIX,
-            SEQRND,
-            PARALL
+            PARALL,
+            TOPO
         };
 
         /// @brief Verbosity (amount of output sent to stderr)
@@ -56,13 +57,13 @@ private:
     std::vector<std::vector<EdgeProp>> _edges;
 
     struct EdgePropKernel {
-        thrust::device_vector<size_t> row_ptr_fv;
-        thrust::device_vector<size_t> col_ind_fv;
+        thrust::device_vector<Size> row_ptr_fv;
+        thrust::device_vector<Size> col_ind_fv;
 
         thrust::device_vector<Real> prod_fv_0;
         thrust::device_vector<Real> prod_fv_1;
-        thrust::device_vector<size_t> num_zeros_fv_0;
-        thrust::device_vector<size_t> num_zeros_fv_1;
+        thrust::device_vector<Size> num_zeros_fv_0;
+        thrust::device_vector<Size> num_zeros_fv_1;
         thrust::device_vector<Real> message_fv_0;
         thrust::device_vector<Real> message_fv_1;
         thrust::device_vector<Real> message_vf_0;
@@ -73,9 +74,9 @@ private:
     } edgePropKernel;
 
     struct HostProp {
-        thrust::host_vector<size_t> h_row_ptr_fv;
-        thrust::host_vector<size_t> h_row_ptr_vf;
-        thrust::host_vector<size_t> h_head; 
+        thrust::host_vector<Size> h_row_ptr_fv;
+        thrust::host_vector<Size> h_row_ptr_vf;
+        thrust::host_vector<Size> h_head; 
         thrust::host_vector<Real> h_prob_default;
         thrust::host_vector<Real> h_prob; 
         thrust::host_vector<Real> h_mask0;
@@ -88,6 +89,7 @@ private:
     thrust::host_vector<Real> _beliefsV;
     std::vector<Real> _lowPassBeliefs;
     std::vector<Edge> _updateSeq;
+    std::vector<std::vector<Size>> _edgePreorderRank;
     std::vector<thrust::device_vector<Index3>> _updateSeqVF;
     std::vector<thrust::device_vector<Index2Real>> _updateSeqI;
     std::vector<thrust::device_vector<Index5Real2>> _updateSeqAndTD;
@@ -98,21 +100,23 @@ private:
     std::vector<thrust::device_vector<Index6Real2>> _updateSeqOrBU;
     std::vector<thrust::device_vector<Index6Real4>> _updateSeqAndClampedBU;
     std::vector<thrust::device_vector<Index6Real4>> _updateSeqOrClampedBU;
+    std::vector<thrust::device_vector<Index7Real4>> _updateSeqFV;
 
-    /// @brief 
-    /// @param i 
-    /// @param _I 
-    /// @return 
-    const Prob &newMessage(size_t i, size_t _I) const;
     /// @brief 
     /// @param opts 
     void setProperties(const PropertySet &opts);
     /// @brief Helper function for constructors
     void construct();
+    /// @brief Build the default fixed edge order used by sequential updates.
+    void buildFixedUpdateSeq();
+    /// @brief Build a topological preorder over a tree-shaped factor graph.
+    void buildTopoUpdateSeq();
+    /// @brief Return true iff lhs is a strict predecessor of rhs in the active preorder.
+    bool edgeStrictlyPrecedes(const Edge &lhs, const Edge &rhs) const;
     /// @brief Parallelly calculate all messages over the network
-    void calcNewMessageAll();
+    void calcNewMessageFusedAll();
     /// @brief Parallelly calculate all messages over the network
-    void calcNewMessage(size_t i);
+    void calcNewMessageFused(size_t i);
     /// @brief Replace the "old" message from the neighbors of variables to 
     /// variables by the "new" (updated) message
     void updateMessage(size_t i);
@@ -133,27 +137,28 @@ private:
     /// @param d_row_ptr 
     /// @param d_col_ind 
     void coo2csr(
-        thrust::host_vector<size_t> &rows, thrust::host_vector<size_t> &cols, 
-        thrust::host_vector<size_t> &h_row_ptr, 
-        thrust::host_vector<size_t> &h_col_ind
+        thrust::host_vector<Size> &rows, thrust::host_vector<Size> &cols, 
+        thrust::host_vector<Size> &h_row_ptr, 
+        thrust::host_vector<Size> &h_col_ind
     );
     /// @brief 
-    void transferMessageToHost();
+    void transferBeliefToHost();
     /// @brief 
-    void putUpdateSeqToKernel(
-        thrust::host_vector<size_t> &h_row_ptr_fv, 
-        thrust::host_vector<size_t> &h_row_ptr_vf, 
-        thrust::host_vector<size_t> &h_head, 
+    void putUpdateSeqToKernelFused(
+        thrust::host_vector<Size> &h_row_ptr_fv, 
+        thrust::host_vector<Size> &h_row_ptr_vf, 
+        thrust::host_vector<Size> &h_head, 
         thrust::host_vector<Real> &h_prob_default, 
         thrust::host_vector<Real> &h_prob, 
         thrust::host_vector<Real> &h_mask0, 
-        thrust::host_vector<Real> &h_mask1
+        thrust::host_vector<Real> &h_mask1,
+        bool respectPreorder = false
     );
     /// @brief 
-    void putParallUpdateSeqToKernel(
-        thrust::host_vector<size_t> &h_row_ptr_fv, 
-        thrust::host_vector<size_t> &h_row_ptr_vf, 
-        thrust::host_vector<size_t> &h_head, 
+    void putParallUpdateSeqToKernelFused(
+        thrust::host_vector<Size> &h_row_ptr_fv, 
+        thrust::host_vector<Size> &h_row_ptr_vf, 
+        thrust::host_vector<Size> &h_head, 
         thrust::host_vector<Real> &h_prob_default, 
         thrust::host_vector<Real> &h_prob, 
         thrust::host_vector<Real> &h_mask0, 
@@ -172,10 +177,19 @@ public:
     /// @brief 
     void run();
 
+    Real run(Real tolerance, size_t maxIters, size_t histLength);
     Real run(Real tolerance, size_t minIters, size_t maxIters, size_t histLength);
     Real newBelief(size_t varIndex) const {
         return _lowPassBeliefs[varIndex];
     }
+
+    void transferMessagesToHost();
+
+    /// @brief 
+    /// @param i 
+    /// @param _I 
+    /// @return 
+    const Prob &newMessage(size_t i, size_t _I) const;
 };
     
 } // namespace lbp 

@@ -80,13 +80,18 @@ CausalFactor CausalFactor::gen_clamped(Var i, size_t x) const {
                     std::cerr << "Duplicate clamp head of factor " << *this << "with val " << x << std::endl;
                     newFac.head_mask *= head_mask;
                 }
-            } else {
+            } 
+            else {
                 if (_body.contains(i)) {
                     newFac._body.erase(i);
-                }
-                // Note: if the body is negated, the clamp is also erased
-                if ((x == 0 && _type == CausalType::DefiniteAnd) || (x > 0 && _type == CausalType::DefiniteOr)) {
-                    newFac._p = _q;
+                    newFac._vs.erase(i);
+                    // Note: if the body is negated, the clamp is also erased
+                    if ((x == 0 && _type == CausalType::DefiniteAnd) || (x > 0 && _type == CausalType::DefiniteOr)) {
+                        newFac._p = _q;
+                        newFac._body = VarSet();
+                        newFac._vs = VarSet();
+                        newFac._vs.insert(_head);
+                    }
                 }
             }
             break;

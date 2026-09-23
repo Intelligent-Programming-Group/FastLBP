@@ -11,6 +11,6 @@ curdir=`pwd`
 #   g++ -std=c++11 -O2 -march=native -Wall -Wextra -Werror -I ./include wrapper.cpp ./lib/libdai.a -lgmp -lgmpxx -fopenmp -o wrapper
 #fi
 
-cmake -B build -S. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=. && cmake --build build --parallel 8 && cmake --install build
+cmake -B build -S. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=. -Wno-dev && cmake --build build --parallel 8 && cmake --install build
 #g++ -std=c++11 -O2 -march=native -Wall -Wextra -I ./include -I ./ext/include wrapper.cpp ./lib/libdai.a ./lib/libdai_ext.a -lgmp -lgmpxx -fopenmp -o bp_wrapper
 exit $?

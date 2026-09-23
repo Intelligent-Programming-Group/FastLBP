@@ -1,6 +1,5 @@
 add_library(lbp STATIC 
             bipgraph.cpp
-            bp.cpp
             factor.cpp 
             factorgraph.cpp 
             graph.cpp

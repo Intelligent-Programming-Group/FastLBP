@@ -41,6 +41,7 @@ public:
     const Var &var( size_t i ) const;
     const CausalFactor &factor(size_t I) const;
     const std::vector<Var>& vars() const;
+    const std::vector<CausalFactor>& factors() const;
     const Neighbors& nbV( size_t i ) const;
     const Neighbor& nbV( size_t i, size_t _I ) const;
     const Neighbors& nbF( size_t I ) const;
