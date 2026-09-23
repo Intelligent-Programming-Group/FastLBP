@@ -1,6 +1,5 @@
 #include <ext/causal_bp.h>
 #include <kernel/causal_bp_seq.h>
-#include <lbp/bp.h>
 #include <lbp/properties.h>
 #include <utils/utils.h>
 using namespace lbp;
@@ -19,7 +18,6 @@ static bool is_causal;
 static FactorGraph fg;
 static CausalFactorGraph causal_fg;
 static PropertySet opts;
-static unique_ptr<BP> bp;
 static unique_ptr<CausalBP> causal_bp;
 static map<int, bool> clamps;
 static string factorGraphFileName;
@@ -38,12 +36,8 @@ void initBP() {
     }
     if (is_causal)
         causal_bp.reset(new CausalBP(new_causal_fg, opts));
-    else
-        bp.reset(new BP(fg, opts));
     if (is_causal)
         causal_bp->init();
-    else
-        bp->init();
 }
 
 void queryVariable() {
@@ -158,7 +152,6 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    kernel::streamCreate();
     factorGraphFileName = argv[1];
     is_causal = factorGraphFileName.substr(
             factorGraphFileName.find_last_of(".") + 1
