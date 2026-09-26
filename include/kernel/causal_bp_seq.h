@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cuda_runtime_api.h>
 #include <utils/utils.h>
 
 namespace lbp {
@@ -35,7 +36,8 @@ void calcMessageVF(
     const Size *num_zeros_0, 
     const Size *num_zeros_1, 
     const Index3 *ind_vf, 
-    size_t n
+    size_t n,
+    cudaStream_t stream = nullptr
 );
 
 void calcMessageFVFused(
@@ -48,7 +50,8 @@ void calcMessageFVFused(
     Size *num_zeros_0, 
     Size *num_zeros_1, 
     const Index7Real4 *ind_fv, 
-    size_t n
+    size_t n,
+    cudaStream_t stream = nullptr
 );
     
 } // namespace kernel 

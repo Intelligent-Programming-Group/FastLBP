@@ -5,9 +5,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <limits>
+#include <memory>
 #include <random>
 #include <set>
 #include <queue>
+#include <stdexcept>
 #include <ext/causal_bp.h>
 #include <kernel/causal_bp_parall.h>
 #include <kernel/causal_bp_seq.h>
@@ -15,6 +19,99 @@
 #include <utils/utils.h>
 
 namespace lbp {
+
+namespace {
+
+// Sample-major storage keeps writes contiguous when variables accept the same
+// sweeps. Each variable has its own cursor: rejected nonfinite values do not
+// displace its previous valid history.
+class HostBeliefHistory {
+    size_t variables_;
+    size_t capacity_;
+    std::unique_ptr<Real[]> values_;
+    std::vector<size_t> next_;
+    std::vector<size_t> counts_;
+
+public:
+    HostBeliefHistory(size_t variables, size_t capacity)
+        : variables_(variables), capacity_(capacity) {
+        if (capacity_ == 0) {
+            throw std::invalid_argument("belief history length must be positive");
+        }
+        const size_t maxValues = std::numeric_limits<size_t>::max() / sizeof(Real);
+        if (variables_ > maxValues / capacity_) {
+            throw std::length_error("belief history allocation size overflow");
+        }
+        const size_t elements = variables_ * capacity_;
+        // Every slot is written before being read; avoid initializing the full
+        // history only to overwrite it. Empty graphs allocate no sample array.
+        if (elements != 0) values_.reset(new Real[elements]);
+        next_.resize(variables_, 0);
+        counts_.resize(variables_, 0);
+    }
+
+    void push(size_t variable, Real value) {
+        const auto category = std::fpclassify(value);
+        if (category != FP_NORMAL && category != FP_SUBNORMAL && category != FP_ZERO) {
+            return;
+        }
+        size_t slot = next_[variable];
+        values_[slot * variables_ + variable] = value;
+        if (++slot == capacity_) slot = 0;
+        next_[variable] = slot;
+        if (counts_[variable] < capacity_) ++counts_[variable];
+    }
+
+    Real mean(size_t variable) const {
+        const size_t count = counts_[variable];
+        size_t slot = count == capacity_ ? next_[variable] : 0;
+        Real sum = 0.0;
+        // Preserve the queue's oldest-to-newest additions and final division;
+        // a rolling sum or tree reduction would change floating-point order.
+        for (size_t sample = 0; sample < count; ++sample) {
+            sum += values_[slot * variables_ + variable];
+            if (++slot == capacity_) slot = 0;
+        }
+        if (count > 0) sum /= count;
+        return sum;
+    }
+};
+
+// A graph belongs to one BP call: its buffers and fixed update order must not
+// outlive, or be reused for, a separately initialized CausalBP instance.
+class MessageSweepGraph {
+    cudaStream_t capture_stream_ = nullptr;
+    cudaGraph_t graph_ = nullptr;
+    cudaGraphExec_t executable_ = nullptr;
+
+public:
+    MessageSweepGraph() = default;
+    MessageSweepGraph(const MessageSweepGraph &) = delete;
+    MessageSweepGraph &operator=(const MessageSweepGraph &) = delete;
+
+    ~MessageSweepGraph() {
+        if (executable_) cudaGraphExecDestroy(executable_);
+        if (graph_) cudaGraphDestroy(graph_);
+        if (capture_stream_) cudaStreamDestroy(capture_stream_);
+    }
+
+    template <typename RecordSweep>
+    void capture(RecordSweep record_sweep) {
+        CUDA_CHECK_ERROR(cudaStreamCreateWithFlags(&capture_stream_, cudaStreamNonBlocking));
+        CUDA_CHECK_ERROR(cudaStreamBeginCapture(capture_stream_, cudaStreamCaptureModeThreadLocal));
+        record_sweep(capture_stream_);
+        CUDA_CHECK_ERROR(cudaStreamEndCapture(capture_stream_, &graph_));
+        CUDA_CHECK_ERROR(cudaGraphInstantiateWithFlags(&executable_, graph_, 0));
+    }
+
+    void launch() const {
+        // The existing initialization and belief/convergence operations use
+        // the default stream. Replaying here preserves their ordering.
+        CUDA_CHECK_ERROR(cudaGraphLaunch(executable_, nullptr));
+    }
+};
+
+} // namespace
 
 thread_local rnd_gen_type rnd_gen(42U);
 
@@ -346,7 +443,7 @@ void CausalBP::calcNewMessageFusedAll() {
     );
 }
 
-void CausalBP::calcNewMessageFused(size_t i) {
+void CausalBP::calcNewMessageFused(size_t i, cudaStream_t stream) {
     // std::cerr << "Iteration " << i << std::endl;
     // v -> f
     kernel::calcMessageVF(
@@ -359,7 +456,8 @@ void CausalBP::calcNewMessageFused(size_t i) {
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_0.data()),
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_1.data()),
         thrust::raw_pointer_cast(_updateSeqVF[i].data()),
-        _updateSeqVF[i].size()
+        _updateSeqVF[i].size(),
+        stream
     );
 
     // f -> v
@@ -373,7 +471,8 @@ void CausalBP::calcNewMessageFused(size_t i) {
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_0.data()),
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_1.data()),
         thrust::raw_pointer_cast(_updateSeqFV[i].data()),
-        _updateSeqFV[i].size()
+        _updateSeqFV[i].size(),
+        stream
     );
 }
 
@@ -921,10 +1020,19 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
     Real maxDiff = INFINITY;
     Real yetToConvergeFraction = 1.0;
     Real nodeFracTolerance = 0.0;
-    std::vector<std::queue<Real>> beliefHist(nrVars());
+    HostBeliefHistory beliefHist(nrVars(), histLength);
 
     enum class RunReturnReason { ALL_CONVERGED, BIG_FRAC_CONVERGED, DIVERGED };
     RunReturnReason returnReason = RunReturnReason::DIVERGED;
+
+    MessageSweepGraph message_sweep;
+    if (props.updates != Properties::UpdateType::PARALL) {
+        message_sweep.capture([this](cudaStream_t stream) {
+            for (size_t i = 0; i < _updateSeqVF.size(); i++) {
+                calcNewMessageFused(i, stream);
+            }
+        });
+    }
 
     for (; true; numIters++, _iters++) {
         if (numIters >= minIters) {
@@ -948,11 +1056,7 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
         if (props.updates == Properties::UpdateType::PARALL) {
             calcNewMessageFusedAll();
         } else {
-            for (size_t i = 0; i < _updateSeqVF.size(); i++) {  
-                // calcNewMessage(i);
-                calcNewMessageFused(i);
-                updateMessage(i);
-            }
+            message_sweep.launch();
         }
 
         maxDiff = -INFINITY;
@@ -982,14 +1086,7 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
 
         thrust::host_vector<Real> bel(_oldBeliefsV);
         for( size_t i = 0; i < nrVars(); ++i ) {
-            auto newBelief = bel[i];
-            auto newBeliefType = fpclassify(newBelief);
-            if (newBeliefType == FP_NORMAL || newBeliefType == FP_SUBNORMAL || newBeliefType == FP_ZERO) {
-                beliefHist[i].push(newBelief);
-            }
-            if (beliefHist[i].size() > histLength) {
-                beliefHist[i].pop();
-            }
+            beliefHist.push(i, bel[i]);
         }
 
         yetToConvergeFraction = Real(nonConvergedElems) / nrVars();
@@ -1017,13 +1114,7 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
     case RunReturnReason::DIVERGED:
         _lowPassBeliefs = std::vector<Real>(nrVars());
         for (size_t i = 0; i < nrVars(); i++) {
-            assert(beliefHist[i].size() <= histLength);
-            size_t denom = beliefHist[i].size();
-            while (!beliefHist[i].empty()) {
-                _lowPassBeliefs[i] += beliefHist[i].front();
-                beliefHist[i].pop();
-            }
-            if (denom > 0) { _lowPassBeliefs[i] /= denom; }
+            _lowPassBeliefs[i] = beliefHist.mean(i);
         }
         // _lowPassBeliefs = std::vector<Real>(nrVars());
         // for (size_t i = 0; i < nrVars(); i++) {
