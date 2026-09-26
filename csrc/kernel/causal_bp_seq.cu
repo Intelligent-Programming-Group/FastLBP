@@ -491,12 +491,13 @@ void calcMessageVF(
     const Size *num_zeros_0, 
     const Size *num_zeros_1, 
     const Index3 *ind_vf, 
-    size_t n
+    size_t n,
+    cudaStream_t stream
 ) {
     if (n == 0) {
         return;
     }
-    calcMessageVFKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
+    calcMessageVFKernel<<<CudaGetBlocks(n), kCudaThreadsNum, 0, stream>>>(
         message_vf_0, 
         message_vf_1, 
         message_fv_0, 
@@ -520,14 +521,15 @@ void calcMessageFVFused(
     Size *num_zeros_0, 
     Size *num_zeros_1, 
     const Index7Real4 *ind_fv, 
-    size_t n
+    size_t n,
+    cudaStream_t stream
 ) {
     if (n == 0) {
         return;
     }
     constexpr unsigned int threads = 1;
     const size_t blocks = (n + threads - 1) / threads;
-    calcMessageFVFusedKernel<<<blocks, threads>>>(
+    calcMessageFVFusedKernel<<<blocks, threads, 0, stream>>>(
         message_fv_0, 
         message_fv_1, 
         message_vf_0, 

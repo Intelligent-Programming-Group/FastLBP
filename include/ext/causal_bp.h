@@ -116,7 +116,7 @@ private:
     /// @brief Parallelly calculate all messages over the network
     void calcNewMessageFusedAll();
     /// @brief Parallelly calculate all messages over the network
-    void calcNewMessageFused(size_t i);
+    void calcNewMessageFused(size_t i, cudaStream_t stream = nullptr);
     /// @brief Replace the "old" message from the neighbors of variables to 
     /// variables by the "new" (updated) message
     void updateMessage(size_t i);

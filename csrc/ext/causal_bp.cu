@@ -77,6 +77,40 @@ public:
     }
 };
 
+// A graph belongs to one BP call: its buffers and fixed update order must not
+// outlive, or be reused for, a separately initialized CausalBP instance.
+class MessageSweepGraph {
+    cudaStream_t capture_stream_ = nullptr;
+    cudaGraph_t graph_ = nullptr;
+    cudaGraphExec_t executable_ = nullptr;
+
+public:
+    MessageSweepGraph() = default;
+    MessageSweepGraph(const MessageSweepGraph &) = delete;
+    MessageSweepGraph &operator=(const MessageSweepGraph &) = delete;
+
+    ~MessageSweepGraph() {
+        if (executable_) cudaGraphExecDestroy(executable_);
+        if (graph_) cudaGraphDestroy(graph_);
+        if (capture_stream_) cudaStreamDestroy(capture_stream_);
+    }
+
+    template <typename RecordSweep>
+    void capture(RecordSweep record_sweep) {
+        CUDA_CHECK_ERROR(cudaStreamCreateWithFlags(&capture_stream_, cudaStreamNonBlocking));
+        CUDA_CHECK_ERROR(cudaStreamBeginCapture(capture_stream_, cudaStreamCaptureModeThreadLocal));
+        record_sweep(capture_stream_);
+        CUDA_CHECK_ERROR(cudaStreamEndCapture(capture_stream_, &graph_));
+        CUDA_CHECK_ERROR(cudaGraphInstantiateWithFlags(&executable_, graph_, 0));
+    }
+
+    void launch() const {
+        // The existing initialization and belief/convergence operations use
+        // the default stream. Replaying here preserves their ordering.
+        CUDA_CHECK_ERROR(cudaGraphLaunch(executable_, nullptr));
+    }
+};
+
 } // namespace
 
 thread_local rnd_gen_type rnd_gen(42U);
@@ -409,7 +443,7 @@ void CausalBP::calcNewMessageFusedAll() {
     );
 }
 
-void CausalBP::calcNewMessageFused(size_t i) {
+void CausalBP::calcNewMessageFused(size_t i, cudaStream_t stream) {
     // std::cerr << "Iteration " << i << std::endl;
     // v -> f
     kernel::calcMessageVF(
@@ -422,7 +456,8 @@ void CausalBP::calcNewMessageFused(size_t i) {
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_0.data()),
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_1.data()),
         thrust::raw_pointer_cast(_updateSeqVF[i].data()),
-        _updateSeqVF[i].size()
+        _updateSeqVF[i].size(),
+        stream
     );
 
     // f -> v
@@ -436,7 +471,8 @@ void CausalBP::calcNewMessageFused(size_t i) {
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_0.data()),
         thrust::raw_pointer_cast(edgePropKernel.num_zeros_fv_1.data()),
         thrust::raw_pointer_cast(_updateSeqFV[i].data()),
-        _updateSeqFV[i].size()
+        _updateSeqFV[i].size(),
+        stream
     );
 }
 
@@ -989,6 +1025,15 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
     enum class RunReturnReason { ALL_CONVERGED, BIG_FRAC_CONVERGED, DIVERGED };
     RunReturnReason returnReason = RunReturnReason::DIVERGED;
 
+    MessageSweepGraph message_sweep;
+    if (props.updates != Properties::UpdateType::PARALL) {
+        message_sweep.capture([this](cudaStream_t stream) {
+            for (size_t i = 0; i < _updateSeqVF.size(); i++) {
+                calcNewMessageFused(i, stream);
+            }
+        });
+    }
+
     for (; true; numIters++, _iters++) {
         if (numIters >= minIters) {
             nodeFracTolerance = Real(numIters - minIters) / (maxIters - minIters);
@@ -1011,11 +1056,7 @@ Real CausalBP::run(Real tolerance, size_t minIters, size_t maxIters, size_t hist
         if (props.updates == Properties::UpdateType::PARALL) {
             calcNewMessageFusedAll();
         } else {
-            for (size_t i = 0; i < _updateSeqVF.size(); i++) {  
-                // calcNewMessage(i);
-                calcNewMessageFused(i);
-                updateMessage(i);
-            }
+            message_sweep.launch();
         }
 
         maxDiff = -INFINITY;
