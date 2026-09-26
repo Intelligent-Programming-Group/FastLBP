@@ -525,7 +525,9 @@ void calcMessageFVFused(
     if (n == 0) {
         return;
     }
-    calcMessageFVFusedKernel<<<CudaGetBlocks(n), kCudaThreadsNum>>>(
+    constexpr unsigned int threads = 1;
+    const size_t blocks = (n + threads - 1) / threads;
+    calcMessageFVFusedKernel<<<blocks, threads>>>(
         message_fv_0, 
         message_fv_1, 
         message_vf_0, 
